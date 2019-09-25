@@ -1,0 +1,512 @@
+---
+title: "Incomes predicter"
+author: "Jesús Aguerri"
+date: "23/9/2019"
+output: pdf_document
+---
+# 1. INTRODUCTION  
+The goal of this project is to develop and algorithm that could predict if someone wins less than 50.000 (50K) dollars per year. We are going to use for that the data set "Adult census income", avaible in the website kaggle.    
+https://www.kaggle.com/uciml/adult-census-income/kernels  
+This data-set was extracted from the 1994 Census bureau database by Ronny Kohavi and Barry Becker  and contain information about union states of america citizens older than 16 year old.
+This data could look a bit older, however this data-set have as adventage that it´s almost ready to train algorithm and that many people have used it to build their own models, which give us a lot of usefull information to try to bulid our own algorithm.   
+In addition, even though this project will finish when the algorithm is built, the real utility of this project is that the developed algorithm could be used in other datasets with sociodemografic information.  
+In consequence, first of all we will present the data and we will analyse them, looking for the varaibles that could be usefulls to develop the algorithm. Later, we will test different models and finally we will pick that with a better performance. We will hightlight the model accuracy, but always having in mind the balance between recall and precision. In aditton, the algorithm interpretabillity will be also really important for us, becasuse to know what varaibles could explain the major varaiabillity across the data are going to be even as  important as the algorithm accuracy.  
+
+# 2. TO GET AND TO PRESENT THE DATA  
+During this project we will use the following packages:
+
+```{r packs, echo= TRUE, eval = TRUE, message = FALSE, warning = FALSE }
+#Tidycerse
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+#Caret
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+
+```
+
+The data can be download from Jesús Aguerri Git-hub account using ths code:  
+```{r download, echo= TRUE, eval = TRUE, message = FALSE, warning = FALSE , cache=TRUE}
+dl <- tempfile()
+download.file("https://raw.githubusercontent.com/jcaguerri/adult-income-project/master/adultdataset.csv"
+, dl)
+adults <- read.csv(dl)
+```
+
+Using dim() we can see how many rows (cases)  and how many variables have the dataset.
+```{r dim, echo=TRUE, eval=TRUE}
+dim(adults)
+```
+And using the functions head and str we can see the adults data-set structure
+```{r str, echo=TRUE, eval=TRUE}
+head(adults) #first rows of the dataset
+str(adults) #varaible structure
+```
+
+Beffore go deeply we have to see that there are somo "?" working as values, so we´re going to replace it for "N/A" values. This let us omit them later and to avoid confusions. "N/A" values are easy to count and, as we can see below, there are more than 4.000 missing values.
+```{r na, echo=TRUE, eval=TRUE}
+adults <- adults %>% na_if("?")
+sum(is.na(adults)) #there are more than 4000 missing values
+```
+
+Finally we have to hightlight that the main variable, that we want to predict is the varaiable income. In the next section of the project we are going to explore what variables look related with the incomes, but we must to have always in mind the distribution of the incomes acros he population.  
+
+```{r incomes, echo=TRUE, eval=TRUE}
+adults  %>% 
+  summarise("less50K" = mean(income== "<=50K"), 
+            "more50K" = mean(income == ">50K"),
+            "total" = n())
+```
+
+The proportion of people that earn more or less than 50k per year will be reference that able us to say if a variable loos related or not related with the incomes.  
+
+# 3. ANALYZING THE VARIABLES  
+
+## 3.1. Incomes by age  
+```{r age, echo=TRUE, eval=TRUE}
+adults %>% na.omit() %>% 
+  ggplot(aes(age, color= income, fill= income)) +
+  geom_density(alpha= 0.7) +
+  labs(x = "Age", y = "Frequency", title = "Age frequency by incomes")
+```
+As the plot shows, youngest people seems earn less than 50K with more frequency that older people.
+
+## 3.2 Incomes by workclass  
+As the following table and the following plot show, there are some labour market sector where to earn more than 50k is more usual than in the general population. Those sectors are formed by self employers and persons who works for the federal gouvernment.
+```{r workclasstable, echo=TRUE, eval=TRUE}
+adults  %>% 
+  na.omit() %>%
+  group_by(workclass) %>%
+  summarise("less50K" = mean(income== "<=50K"),
+            "more50K" = mean(income == ">50K"),
+            "total" = n()) %>%
+  arrange(desc(more50K)) %>%
+  knitr::kable()
+```
+```{r workclassplot, echo=TRUE, eval=TRUE}
+adults %>% na.omit() %>% 
+  ggplot(aes(workclass, color= income, fill= income)) +
+  geom_bar(position = position_stack(reverse = TRUE)) +
+  labs(x = "Working Class", y = "number", title = "Working class frequency")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## 3.3. Incomes by education  
+```{r edutab1, echo=TRUE, eval=TRUE}
+#Table
+adults  %>% 
+  na.omit() %>% 
+  group_by(education) %>% 
+  summarise("less50K" = mean(income== "<=50K"),
+            "more50K" = mean(income == ">50K"), 
+            "total" = n()) %>%
+  knitr::kable()
+```
+
+The table and the plot show that this variable have 15 different levels, some of them have just a few cases and many have really close relations with the income variable. So we are going to group this variable by educational levels in order to get more robust predictions and to get a better performance of our algorithm.
+
+```{r edugroup2, echo=TRUE, eval=TRUE}
+adults <- adults %>% mutate(education_level = case_when(
+  .$education %in% c("1st-4th", "5th-6th", "7th-8th")~"2.non-finish-middle-school",
+  .$education %in% c("9th", "10th", "11th", "12th")~"3.non-finish-high-school",
+  .$education %in% c("Assoc-acdm", "Assoc-voc")~"5.associates",
+  .$education %in% c("Some-college", "HS-grad")~"4.hs-graduate",
+  .$education %in% "Bachelors" ~ "6.bachelors",
+  .$education %in% "Prof-school" ~ "8.prog-school",
+  .$education %in% "Preschool" ~ "1.preschool",
+  .$education %in% "Doctorate" ~ "9.doctorate",
+  .$education %in% "Masters" ~"7.master"))
+```
+
+
+```{r edutabplot, echo=TRUE, eval=TRUE}
+#Plot(it shows mainly the distribution of educational levels across the population):
+adults %>% na.omit() %>% 
+  ggplot(aes(education_level, color= income, fill= income)) +
+  geom_bar(position = position_stack(reverse = TRUE)) +
+  labs(x = "Education level", 
+       y = "Count", 
+       title = "Educational level frequency") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+The grouped variable able us to produce the following plot, which shows pretty well the positive relation between educational level and incomes
+
+```{r eduplot, echo=TRUE, eval=TRUE}
+adults %>% na.omit() %>% 
+  ggplot(aes(education_level , color= income, fill= income)) +
+  geom_bar(position = "fill") +
+  coord_flip() +
+  labs(x = "Education_level", 
+       y = "Proportion", 
+       title = "Incomes by educational level")+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  geom_hline(yintercept=0.24, col="blue") +
+  annotate("text", x= 5.1, y= 0.64, size= 2, color="blue",
+           label="Distribution of incomes (+50k/-50k) in general population")
+```
+
+## 3.4. Marital status
+This varaiable have 7 labels, two of them are:  
+-Married-AF-spouse: Married armed forces spouse  
+-Married-civ-spouse: Married civilian spouse  
+Both levels can be grouped into the group "married".  
+In addition, the level "married-spouse-absent" could be joined to the label "Separated".
+```{r maritalrecode, echo=TRUE, eval=TRUE}
+adults <- adults %>% mutate(marital_status = case_when(
+  .$marital.status %in% c("Married-AF-spouse", "Married-civ-spouse")~"Married",
+  .$marital.status %in% c("Separated", "Married-spouse-absent", "11th")~"separated",
+  .$marital.status %in% "Divorced" ~ "divorced",
+  .$marital.status %in% "Widowed" ~ "widowed",
+  .$marital.status %in% "Never-married" ~ "never-married"))
+```
+
+Now we can summarize the relation between the marital status and the incomes in the next table.
+
+```{r maritaltable, echo=TRUE, eval=TRUE}
+adults  %>% 
+  na.omit() %>% 
+  group_by(marital_status) %>% 
+  summarise("less50K" = mean(income== "<=50K"),
+            "more50K" = mean(income == ">50K"),
+            "total" = n()) %>%
+  arrange(desc(more50K))%>%
+  knitr::kable()
+```
+
+And like the next plot shows, the married persons earn more frequnetly than other groups more tahn 50K per year
+
+```{r maritalplot, echo=TRUE, eval=TRUE}
+adults %>% na.omit() %>% 
+  ggplot(aes(marital_status, color= income, fill= income)) +
+  geom_bar(position = position_stack(reverse = TRUE)) +
+  labs(x = "Marital Status", y = "Count", title = "Incomes by Marital Status")+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+## 3.5. Occupation  
+As the next plot show, there are some profesions in which looks more frequent earn more tahn 50k, like executives and proffesionals, an there anothers with the opposite situacion, escecially in the private hause service.
+```{r occupationplot, echo=TRUE, eval=TRUE}
+adults %>% na.omit() %>% 
+  ggplot(aes(occupation, color= income, fill= income)) +
+  geom_bar(position = "fill") +
+  coord_flip() +
+  labs(x = "Ocupation", y = "Proportion", title = "Incomes by occupation")+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  geom_hline(yintercept=0.24, col="blue") +
+  annotate("text", x= 5.1, y= 0.64, size= 2, color="blue",
+           label="Distribution of incomes (+50k/-50k) in general population")
+```
+
+## 3.6. Relationship (rol into the family)   
+The following plot  shows us that husbands and wifes have the highest proportions of individuals who earn more than 50k each year.  
+
+```{r relationship, echo=TRUE, eval=TRUE}
+adults %>% na.omit() %>% 
+  ggplot(aes(income, color= income, fill= income)) +
+  geom_bar( alpha = 0.8, width = 0.8) +
+  facet_grid(~relationship)+
+  labs(x = "Incomes", y = "Count", title = "Incomes by relationship")
+```
+
+## 3.7. Race  
+
+```{r race, echo=TRUE, eval=TRUE}
+adults  %>% na.omit() %>%
+  group_by(race) %>%
+  summarise("less50K" = mean(income== "<=50K"),
+            "more50K" = mean(income == ">50K"),
+            "total" = n()) %>%
+  arrange(desc(more50K)) %>%
+  knitr::kable()
+```
+
+There seems to be a bias in income attending the race
+
+```{r raceplot, echo=TRUE, eval=TRUE}
+adults %>% na.omit() %>% 
+  ggplot(aes(race, color= income, fill= income)) +
+  geom_bar(position = "fill") +
+  coord_flip() +
+  labs(x = "Race", y = "Proportion", title = "Incomes by race")+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  geom_hline(yintercept=0.24, col="blue") +
+  annotate("text", x= 4.3, y= 0.64, size= 2, color="blue",
+           label="Distribution of incomes (+50k/-50k) in general population")
+```
+
+Black and "Amer-Indio-Eskima" earn less than 50k more frequently than the general population. However, the percent of whites and "Asian-Pac-Islander" that earn more than 50k is over the general population average.  
+
+## 3.8. Gender  
+There seems to be a gender bias also. The proportion of womans that earn more than 50k is quite low that the proportion of mens that do it.
+
+```{r gendertab, echo=TRUE, eval=TRUE}
+adults  %>% na.omit() %>%
+  group_by(race) %>%
+  summarise("less50K" = mean(income== "<=50K"),
+            "more50K" = mean(income == ">50K"),
+            "total" = n()) %>%
+  arrange(desc(more50K)) %>%
+  knitr::kable()
+```
+
+```{r genderplot, echo=TRUE, eval=TRUE}
+adults %>% na.omit() %>% 
+  ggplot(aes(sex, color= income, fill= income)) +
+  geom_bar() +
+  labs(x = "Sex", y = "Proportion", title = "Incomes by sex")+
+  geom_bar(position = position_stack(reverse = TRUE))
+```
+
+## 3.9. Capital Variations  
+
+We are goint to mix the varaibles capital.loss and capital.gain into a unique varaible  with the capital variation. 
+
+```{r capvar, echo=TRUE, eval=TRUE}
+adults <- adults %>% mutate(capital_variation = capital.gain - capital.loss) 
+```
+
+```{r capvartab, echo=TRUE, eval=TRUE}
+adults  %>% na.omit() %>%
+  group_by(income) %>%
+  summarise("capital_var_mean" = mean(capital_variation),
+            "capital_var_min" = min(capital_variation),
+            "capital_var_max" = max(capital_variation),
+            "total" = n()) %>%
+  knitr::kable()
+```
+
+## 3.10. Incomes by worked hour per week
+
+```{r workw, echo=TRUE, eval=TRUE}
+adults  %>% na.omit() %>%
+  group_by(income) %>%
+  summarise("Mean hours per week" = mean(hours.per.week),
+            "Standard deviatrion" = sd(hours.per.week)) %>%
+  knitr::kable()
+```
+
+```{r worwbp, echo=TRUE, eval=TRUE}
+adults %>% ggplot(aes(income, hours.per.week, fill=income))+
+  geom_boxplot(alpha= 0.6)+
+  labs(x = "Incomes", y = "Worked hours per week", title = "Incomes by worked hours")
+```
+
+As the table and the boxplot shows those who earn more than 50k work more hours. However, we must have in mind that there are a lot of ouliers and that the standard deviation is quite high in both groups.  
+
+## 3.11. Incomes by origin
+There are 40 differnet  native countries and some of them have just a few cases, for instance, honduras have just 10 cases. So we´re going to group the countries by continent. This will give us a more robust approach to incomes variability across national origin.  
+
+```{r grouporigin, echo=TRUE, eval=TRUE}
+adults <- adults %>% mutate(native_continent = case_when(
+  .$native.country %in% c("France", "Greece", "Hungary", "Italy", "Portugal",
+                          "Scotland", "England", "Germany", "Holand-Netherlands",
+                          "Ireland", "Poland", "Yugoslavia")~"Europe",
+  .$native.country %in% c("Columbia", "Dominican-Republic", "El-Salvador", "Haiti",
+                          "Honduras", "Mexico", "Outlying-US(Guam-USVI-etc)",
+                          "Cuba", "Ecuador", "Guatemala", "Jamaica", "Nicaragua",
+                          "Peru", "Puerto-Rico", "Trinadad&Tobago")~"America(no_usa_canada)",
+  .$native.country %in% c("Iran", "Japan", "Philippines", "Taiwan", "Vietnam", "Cambodia",
+                          "China", "Hong", "India", "Laos", "South", "Thailand")~"Asia",
+  .$native.country %in% "United-States" ~ "USA",
+  .$native.country %in% "Canada" ~"Canada"))
+```
+
+The following plot shows some bias acording to continental origin. It´s specially interesting to see that those who came from other countries in America (omited Canada) have the lowest chance to earn more than 50K per year.
+
+```{r originplot, echo=TRUE, eval=TRUE}
+adults %>% na.omit() %>% 
+  ggplot(aes(native_continent, color= income, fill= income)) +
+  geom_bar(position = "fill", alpha = 0.8, width = 0.8) +
+  coord_flip() +
+  labs(x = "Native continent", y = "Proportion", title = "Incomes by native continent")+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  geom_hline(yintercept=0.24, col="blue") +
+    annotate("text", x= 4.3, y= 0.64, size= 2, color="blue",
+           label="Distribution of incomes (+50k/-50k) in general population")
+```
+
+# 4. METHODS AND MODELS  
+
+First of all we have to prepare our data, so we are going to select these varaibles that we have created and to drop those that we aren´t going to use.
+
+```{r select, echo=TRUE, eval=TRUE}
+adults <- adults %>% select(age, workclass, education_level, marital_status,
+                             occupation, relationship, race, 
+                            sex, capital_variation,
+                             hours.per.week, native_continent, income)
+head(adults)
+```
+
+Those are the varaiables that we are going to use for try to predict the ouput income. We have droped those varaibles that we have modificated, and the varaibles education.num (the education level but showed as numerical variable) and fnlwgt. This second varaible represent the weight or each case in the population, it could help to improve this project. However, we have decided to do our work ignoring this variable, because even without it, we can get results statistically significants.  
+Second we have to remove the N/A cases. 
+
+```{r naomit, echo=TRUE, eval=TRUE}
+sum(is.na(adults))
+adults <- na.omit(adults)
+```
+
+So the size of our data have been reduced to 30.162 cases
+
+```{r newsize, echo=TRUE, eval=TRUE}
+dim(adults)
+```
+
+Finally, we have to create a data partition into two sets. the train set will be used to train our models, and the test set(composed by 20% of the data) will be used to test our models performance.   
+
+```{r partition, echo=TRUE, eval=TRUE}
+set.seed(1)
+test_index <- createDataPartition(y = adults$income, times = 1, p = 0.2, list = FALSE)
+train <- adults[-test_index,]
+test <- adults[test_index,]
+```
+
+Now that we have already  prepared our data, we can start to test different models.
+
+## 4.1. Logistic regression (GLM)  
+Logistic regression is a linear model suitable for predict categorical outcomes. 
+
+```{r glm, echo=TRUE, eval=TRUE, cache=TRUE, warning=FALSE}
+set.seed(1)
+glm_model <- train(income~., data=train, method= "glm",
+                     trControl = trainControl(method = "cv", number=5, p=0.9)) #Chosen crossvalidation with 5 k-folds
+y_hat_glm <- predict(glm_model, test, type = "raw") #Predict
+confusionMatrix(y_hat_glm, test$income) #Show the results
+``` 
+
+The model accuracy is 0.8404, which is quite good. In addition, sensitivity is really good, 0.9261. However, specificity isn´t so good, because it´s just 0.5819
+
+## 4.2. K-nearest neighbor (KNN)
+KNN is another supervised machine learning algorithm. This algotihm have a tunning parameter K, so we have tested different parameters k. 
+
+```{r knntest, echo=TRUE, eval=TRUE, cache= TRUE}
+set.seed(1)
+knn_model <- train(income~., data=train, method = "knn",
+                   tuneGrid = data.frame(k = seq(3, 20, 2)),#test differents k
+                   trControl = trainControl(method = "cv", number=5, p=0.9)) #5-folds                                                                       crossvalidation
+knn_model$bestTune
+``` 
+
+The parameter K that maximeize the accuracy is K=13. Using this K we can to test our model traying to predict the results
+```{r knn, echo=TRUE, eval=TRUE}
+y_hat_knn <- predict(knn_model, test, type = "raw") #Predict
+confusionMatrix(y_hat_knn, test$income) #show results                                             
+``` 
+
+## 4.3. Classification tree
+Classification tree is a supervised machine learning algorithm that predict categorical outcomes. It don´t have the best accuracy, but, this algorithm able to visualice the results in a plot that give information about the importance of each varaible.
+
+```{r clastree, echo=TRUE, eval=TRUE}
+set.seed(1)
+rpart_model <- train(income ~., data = train, method = "rpart",
+                   tuneGrid = data.frame(cp = seq(0, 0.05, 0.005)),
+                   trControl = trainControl(method = "cv", 
+                                            number=5, 
+                                            p=0.9)) #Choose crossvalidation with
+                                                    #5 k-folds)
+y_hat_rpart <- predict(rpart_model, test)#Predict
+confusionMatrix(y_hat_rpart, test$income)#Show results                                                      
+``` 
+
+To plot the tree able us to see what varaibles have the mains rol. Those varaibles are the capital variation, the marital status and the education level.
+
+```{r classtreeplot, echo=TRUE, eval=TRUE}
+plot(rpart_model$finalModel, margin=0.1)
+text(rpart_model$finalModel, cex = 0.75)                                                   
+``` 
+
+## 4.4. Ramdom forest
+Ramdom forest is a powerfull supervised machine learning algorithm. It have two parameters that can be optimized: the mtry (the number of variables that are randomly collected to be sampled at each split time), and the number of trees that the algorithm is going to built.  
+The default behavoir of "rf" in the train function is to built 500 hundreed trees, to test a long number of mtry and to use 25 bootstraps. This produce that the code take several hours for run. By mistake, this was our first approach to the algorithm.
+```{r rfnorun, echo=TRUE, eval=FALSE}
+rf_mode <- train(income~., data=train, method = "rf")
+rf_mode$bestTune
+rf_mode$finalModel                                                        
+``` 
+
+An algorithm that needs several hours for run it´s not usufull (at least in this case). However, this first approach able us to pick the mtry and to reduce the number of trees that we can built improving the performance but remaining the same error. So we have built a best ramdom forest model using 50 trees and mtry= 27. In addition, change bootstrap for crossvalidation with 5 k folds have also let us to make the algorithm more usefull.
+
+```{r rfmodel, echo=TRUE, eval=TRUE, cache= TRUE}
+rf_fit_mod <- train(income~., data= train, method= "rf",
+                    tuneGrid = data.frame(mtry = 27),
+                    trControl= trainControl(method="cv", 
+                                            number=5), #CV with 5 folds
+                    ntree = 50 )
+y_hat_rf <- predict(rf_fit_mod, test, type = "raw") #Predict
+confusionMatrix(y_hat_rf, test$income) #Show results                                              
+``` 
+
+As we can see, the accuracy is now 0.846, the sensitivity is  0.9225, and the scecificity have improved to 0.6152.  
+Ramdom forest also able us to see which are the more important varaibles
+
+```{r rfmodelvar, echo=TRUE, eval=TRUE}
+varImp(rf_fit_mod) #varaible importance
+``` 
+
+# 5. RESULTS  
+Now that we have already trained 4 differents algorithms is time to compare the results.
+```{r res1, echo=TRUE, eval=TRUE}
+con_glm <- confusionMatrix(y_hat_glm, test$income)
+con_knn <- confusionMatrix(y_hat_knn, test$income)
+con_rpart <- confusionMatrix(y_hat_rpart, test$income)
+con_rf <- confusionMatrix(y_hat_rf, test$income)
+  #To build the table with the results:
+models <- c("glm", "knn", "rpart", "rf")
+``` 
+
+```{r res2, echo=TRUE, eval=TRUE}
+      #Accuracies
+accuracies <- c(con_glm$overall["Accuracy"], con_knn$overall["Accuracy"], 
+                con_rpart$overall["Accuracy"], con_rf$overall["Accuracy"])
+``` 
+
+```{r res3, echo=TRUE, eval=TRUE}
+resoults <- data.frame(models, accuracies)
+resoults %>%knitr::kable()
+
+``` 
+
+Accuracies are quite high, however we must also have in mind the sensitivity (or Recall) and the specificity (precision).
+
+```{r resfin, echo=TRUE, eval=TRUE}
+#Acuracies, precision, recall and balanced accuracy.
+resoults <- resoults %>% 
+  mutate(sensitivity = c(con_glm$byClass["Sensitivity"],
+                         con_knn$byClass["Sensitivity"],
+                         con_rpart$byClass["Sensitivity"],
+                         con_rf$byClass["Sensitivity"]),
+         specificity =  c(con_glm$byClass["Specificity"],
+                          con_knn$byClass["Specificity"],
+                          con_rpart$byClass["Specificity"],
+                          con_rf$byClass["Specificity"]),
+         balanced_accuracy = c(con_glm$byClass["Balanced Accuracy"],
+                               con_knn$byClass["Balanced Accuracy"],
+                               con_rpart$byClass["Balanced Accuracy"],
+                               con_rf$byClass["Balanced Accuracy"]))
+resoults %>%knitr::kable()
+
+``` 
+
+The table shows us that the all the sensitivities are highs, while the specificitys are lower. However, the model built by ramdom forest have a specificity better than the other models and also a quite good balanced accuracy. So we can affirm that the model built using ramdom forest reach our goal.
+
+# 6. CONCLUSION  
+This porject aim was develop a model that let us predict if someone earn less than 50k per year. We have use different supervised machine learning algorithms to try to reach our goal. As we have already see, the model fit by ramdom forest have give us a good accuracy -0.846- and also a good balanced accuracy, so our model is also "good" predicting if someone earns more than 50k.    
+In addition, ramdom forest let us to know which are the more important varaibles to do the prediction. The three most important varaibles are tha capital variation, the age and the marital status. However, we have to highlight that these variables aren´t explicative variables, are just variables with certain correlation with the incomes and that are ussefulls to predict it.
+It is not our goal in this project, but if we want an explicative model we could re-run the ramdom forest selecting those varaibles that can be explicatives (this exercise is done in the annexed).
+
+# ANNEXED
+
+```{r annexed, echo=TRUE, eval=TRUE}
+#RAMDOM FOREST JUST WITH EXPLICATIVE VARIABLES
+rf_exp_mod <- train(income~ age + workclass+ 
+                      education_level +occupation + 
+                      race + sex +hours.per.week + 
+                      native_continent ,
+                    data= train, 
+                    method= "rf",
+                    trControl= trainControl(method="cv", 
+                                            number=5), #CV with 5 folds
+                    ntree = 100 )
+y_hat_rf_exp <- predict(rf_exp_mod, test, type = "raw") #Predict
+confusionMatrix(y_hat_rf_exp, test$income) #Show results
+varImp(rf_exp_mod) #varaible importance
+
+``` 
